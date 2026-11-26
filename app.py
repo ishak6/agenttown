@@ -1,219 +1,139 @@
-"""AgentTown: zero-dependency Agent Civilization prototype.
-Run: python app.py | Open: http://localhost:8000
-"""
+"""AgentTown local autonomous workflow engine. Run: python app.py"""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from datetime import datetime, timezone
-import json
-import sqlite3
+import json, sqlite3, threading
 
-DB_PATH = "agenttown.db"
-AGENTS = [
-    ("mayor", "Mayor", "Coordinator", "Keeps the civilization organized."),
-    ("researcher", "Researcher", "Research", "Collects and summarizes knowledge."),
-    ("developer", "Developer", "Engineering", "Builds and improves tools."),
-    ("designer", "Designer", "Design", "Improves the citizen experience."),
-    ("auditor", "Auditor", "Governance", "Reviews work for clarity and safety."),
-]
-
-def timestamp():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
+DB_PATH="agenttown.db"
+LOCK=threading.RLock()
+AGENTS=[
+("mayor","Mayor","Coordinator","Coordinates goals and dependencies."),
+("researcher","Researcher","Research","Structures questions and evidence plans."),
+("developer","Developer","Engineering","Creates technical implementation plans."),
+("designer","Designer","Design","Creates user journeys and interface plans."),
+("auditor","Auditor","Governance","Checks quality, risks, and completion criteria.")]
+def now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+ c=sqlite3.connect(DB_PATH,timeout=10); c.row_factory=sqlite3.Row; c.execute("PRAGMA foreign_keys=ON"); return c
+def event(msg,c):
+ c.execute("INSERT INTO events(message,created_at) VALUES (?,?)",(msg,now()))
 def initialize():
-    with db() as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS agents (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
-            description TEXT NOT NULL)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'proposed', created_at TEXT NOT NULL,
-            FOREIGN KEY(agent_id) REFERENCES agents(id))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL,
-            created_at TEXT NOT NULL)""")
-        conn.executemany(
-            "INSERT OR IGNORE INTO agents(id,name,role,description) VALUES (?,?,?,?)",
-            AGENTS)
-        if conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0:
-            conn.execute("INSERT INTO events(message,created_at) VALUES (?,?)",
-                         ("AgentTown founded. Five founding agents joined the council.", timestamp()))
-
-def record_event(message):
-    with db() as conn:
-        conn.execute("INSERT INTO events(message,created_at) VALUES (?,?)",
-                     (message, timestamp()))
-
+ with LOCK,db() as c:
+  c.execute("CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,name TEXT NOT NULL,role TEXT NOT NULL,description TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'idle')")
+  c.execute("""CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',agent_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',created_at TEXT NOT NULL,FOREIGN KEY(agent_id) REFERENCES agents(id))""")
+  c.execute("CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,message TEXT NOT NULL,created_at TEXT NOT NULL)")
+  c.execute("CREATE TABLE IF NOT EXISTS world_state(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+  ac={r["name"] for r in c.execute("PRAGMA table_info(agents)")}
+  if "status" not in ac: c.execute("ALTER TABLE agents ADD COLUMN status TEXT NOT NULL DEFAULT 'idle'")
+  tc={r["name"] for r in c.execute("PRAGMA table_info(tasks)")}
+  if "result" not in tc: c.execute("ALTER TABLE tasks ADD COLUMN result TEXT NOT NULL DEFAULT ''")
+  if "completed_at" not in tc: c.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
+  c.executemany("INSERT OR IGNORE INTO agents(id,name,role,description) VALUES (?,?,?,?)",AGENTS)
+  c.execute("INSERT OR IGNORE INTO world_state VALUES('paused','false')")
+  if not c.execute("SELECT 1 FROM events LIMIT 1").fetchone(): event("AgentTown local engine initialized; five worker agents registered.",c)
+def paused():
+ with LOCK,db() as c:
+  r=c.execute("SELECT value FROM world_state WHERE key='paused'").fetchone(); return bool(r and r["value"]=="true")
+def set_paused(v):
+ with LOCK,db() as c:
+  c.execute("UPDATE world_state SET value=? WHERE key='paused'",("true" if v else "false",))
+  event("Creator paused the civilization." if v else "Creator resumed the civilization.",c)
+def work(a,title,desc):
+ goal=title+(": "+desc if desc else "")
+ templates={
+ "mayor":"COORDINATION RESULT\nGoal: "+goal+"\n1. Scope the objective.\n2. Break it into actionable steps.\n3. Identify dependencies and owners.\n4. Record measurable completion checks.",
+ "researcher":"RESEARCH WORK PRODUCT\nGoal: "+goal+"\n1. Define the core question.\n2. Gather primary sources and compare independent evidence.\n3. Separate verified facts, assumptions, and open questions.\nLIMITATION: This first local worker does not browse the live web; it creates a research plan, not verified findings.",
+ "developer":"ENGINEERING WORK PRODUCT\nGoal: "+goal+"\n1. Define inputs, outputs, and acceptance criteria.\n2. Implement the smallest testable change.\n3. Test normal, invalid, and edge cases.\n4. Record technical risks and remaining work.\nDELIVERABLE: implementation plan.",
+ "designer":"DESIGN WORK PRODUCT\nGoal: "+goal+"\n1. Identify the primary user and task.\n2. Map entry, action, feedback, and recovery.\n3. Prioritize accessibility and responsive layout.\n4. Define a review checklist.",
+ "auditor":"GOVERNANCE AUDIT\nGoal: "+goal+"\n1. Check clarity and measurability.\n2. Identify safety, privacy, and reliability risks.\n3. Define evidence required for completion.\n4. Flag unsupported claims and assumptions."}
+ return templates[a]
+def execute(tid):
+ if paused(): return False
+ with LOCK,db() as c:
+  t=c.execute("SELECT * FROM tasks WHERE id=?",(tid,)).fetchone()
+  if not t or t["status"] not in ("queued","failed"): return False
+  c.execute("UPDATE tasks SET status='running' WHERE id=?",(tid,))
+  c.execute("UPDATE agents SET status='working' WHERE id=?",(t["agent_id"],))
+  event(t["agent_id"].title()+" started: "+t["title"],c)
+ try:
+  result=work(t["agent_id"],t["title"],t["description"])
+  with LOCK,db() as c:
+   c.execute("UPDATE tasks SET status='completed',result=?,completed_at=? WHERE id=? AND status='running'",(result,now(),tid))
+   c.execute("UPDATE agents SET status='idle' WHERE id=?",(t["agent_id"],))
+   event(t["agent_id"].title()+" completed: "+t["title"],c)
+  return True
+ except Exception as e:
+  with LOCK,db() as c:
+   c.execute("UPDATE tasks SET status='failed',result=? WHERE id=?",("Worker error: "+str(e),tid))
+   c.execute("UPDATE agents SET status='idle' WHERE id=?",(t["agent_id"],))
+   event("Task failed: "+t["title"],c)
+  return False
+def create_task(title,desc,aid):
+ title=title.strip()
+ if not title: raise ValueError("Task title is required.")
+ if aid not in {a[0] for a in AGENTS}: raise ValueError("Unknown agent.")
+ with LOCK,db() as c:
+  cur=c.execute("INSERT INTO tasks(title,description,agent_id,status,created_at) VALUES (?,?,?,'queued',?)",(title[:120],desc.strip()[:1000],aid,now()))
+  tid=cur.lastrowid; event(aid.title()+" received task: "+title[:120],c)
+ if not paused(): execute(tid)
+ return tid
+def council():
+ if paused(): raise RuntimeError("Civilization is paused by Creator.")
+ jobs=[
+ ("Prepare a civilization status report","Summarize current work and blockers.","mayor"),
+ ("Create a knowledge-gathering plan","Define evidence and source checks for the next research cycle.","researcher"),
+ ("Improve task execution workflow","Identify the next engineering improvement and tests.","developer"),
+ ("Design Creator monitoring experience","Define a clear view of agent status and outcomes.","designer"),
+ ("Audit civilization operations","Review execution, data handling, and reliability.","auditor")]
+ ids=[create_task(*j) for j in jobs]
+ event("Council cycle finished; five workers processed their assignments.",db())
+ return ids
 def snapshot():
-    with db() as conn:
-        agents = [dict(r) for r in conn.execute("SELECT * FROM agents ORDER BY rowid")]
-        tasks = [dict(r) for r in conn.execute(
-            "SELECT tasks.*, agents.name AS agent_name FROM tasks "
-            "JOIN agents ON agents.id=tasks.agent_id ORDER BY tasks.id DESC")]
-        events = [dict(r) for r in conn.execute(
-            "SELECT * FROM events ORDER BY id DESC LIMIT 25")]
-    return {"agents": agents, "tasks": tasks, "events": events}
-
-PAGE = r"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentTown — Agent Civilization</title>
-<style>
-:root{color-scheme:dark;font-family:Inter,system-ui,Arial;color:#edf2ff;background:#0d1422}
-*{box-sizing:border-box}body{margin:0}.shell{max-width:1120px;margin:auto;padding:30px 20px}
-header{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap}
-h1{font-size:30px;margin:0}h2{font-size:18px;margin:0 0 16px}.muted{color:#9eabc2;font-size:13px}
-.sub{margin-top:6px;color:#9eabc2}.live{border:1px solid #285b4c;color:#9ce4c5;padding:7px 12px;border-radius:30px;font-size:12px}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:24px 0}
-.panel,.stat{background:#151f31;border:1px solid #29364d;border-radius:15px;padding:18px}
-.stat strong{display:block;font-size:28px;margin-bottom:4px}.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px}
-.agent{background:#101a2b;border:1px solid #29364d;border-radius:11px;padding:13px}
-.agent b{display:block;margin-bottom:5px}.role{font-size:12px;color:#9abaff}
-button{border:0;border-radius:9px;padding:10px 14px;background:#9ab7ff;color:#10182a;font-weight:700;cursor:pointer}
-button.alt{background:#293750;color:#edf2ff}button.small{padding:7px 10px;font-size:12px;margin:5px 0 0 5px}
-.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.grid{display:grid;grid-template-columns:1.35fr 1fr;gap:14px;margin-top:14px}
-input,textarea,select{width:100%;background:#0e1727;color:#edf2ff;border:1px solid #34435e;border-radius:8px;padding:10px;margin:6px 0 13px}
-textarea{min-height:75px;resize:vertical}.task{display:flex;justify-content:space-between;gap:12px;padding:13px 0;border-top:1px solid #29364d}
-.task:first-child{border-top:0}.task h3{font-size:14px;margin:0 0 5px}.task p{font-size:13px;color:#aab6ca;margin:0 0 7px}
-.tag{font-size:11px;border-radius:20px;padding:4px 8px;background:#293750;white-space:nowrap}
-.proposed{color:#ffd58b}.approved{color:#9ce4c5}.completed{color:#b8c7ff}
-.event{padding:9px 0;border-top:1px solid #29364d;font-size:13px}.event:first-child{border-top:0}
-@media(max-width:720px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(3,1fr)}.stat{padding:12px}.stat strong{font-size:22px}.task{display:block}}
-</style></head><body><main class="shell">
-<header><div><h1>🏙️ AgentTown</h1><div class="sub">Agent Civilization · First local prototype</div></div><span class="live">● LOCAL PROTOTYPE</span></header>
-<section class="stats"><div class="stat"><strong id="agent-count">5</strong><span class="muted">Founding agents</span></div>
-<div class="stat"><strong id="task-count">0</strong><span class="muted">Total tasks</span></div>
-<div class="stat"><strong id="done-count">0</strong><span class="muted">Completed</span></div></section>
-<section class="panel"><h2>Founding Council</h2><div class="agents" id="agents"></div>
-<div class="actions"><button onclick="runCouncil()">Run council</button><button class="alt" onclick="refresh()">Refresh</button></div>
-<p class="muted">Demo agents create proposals. Human approval is required before completion.</p></section>
-<div class="grid"><section class="panel"><h2>Task Market</h2><div id="tasks" class="muted">Loading…</div></section>
-<section class="panel"><h2>Create a task proposal</h2><label class="muted" for="title">Title</label>
-<input id="title" maxlength="120" placeholder="e.g. Research renewable energy">
-<label class="muted" for="description">Description</label><textarea id="description" maxlength="500" placeholder="Describe the work…"></textarea>
-<label class="muted" for="agent">Assign to agent</label><select id="agent"></select><button onclick="createTask()">Create proposal</button>
-<h2 style="margin-top:25px">Civilization history</h2><div id="events"></div></section></div>
-<p class="muted" style="text-align:center;margin-top:24px">AgentTown · Data is stored locally in agenttown.db</p></main>
+ with LOCK,db() as c:
+  agents=[dict(x) for x in c.execute("SELECT agents.*,(SELECT COUNT(*) FROM tasks WHERE tasks.agent_id=agents.id AND status='completed') AS completed_tasks FROM agents ORDER BY rowid")]
+  tasks=[dict(x) for x in c.execute("SELECT tasks.*,agents.name AS agent_name FROM tasks JOIN agents ON agents.id=tasks.agent_id ORDER BY tasks.id DESC LIMIT 100")]
+  events=[dict(x) for x in c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 50")]
+  counts={x["status"]:x["n"] for x in c.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
+ return {"agents":agents,"tasks":tasks,"events":events,"counts":counts,"paused":paused(),"engine":"local-role-workers"}
+PAGE=r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentTown Creator Command</title><style>
+:root{color-scheme:dark;font:15px system-ui;color:#edf2ff;background:#0b1220}*{box-sizing:border-box}body{margin:0}.shell{max-width:1160px;margin:auto;padding:28px 20px}header,.head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{margin:0}h2{font-size:17px;margin:0 0 14px}.muted{color:#9eabc2;font-size:12px}.stats,.agents{display:grid;gap:12px}.stats{grid-template-columns:repeat(4,1fr);margin:20px 0}.agents{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.stat,.panel,.agent{background:#151f31;border:1px solid #29364d;border-radius:14px;padding:16px}.stat strong{display:block;font-size:26px}.agent{background:#101a2b;padding:12px}.agent b{display:block}button{border:0;border-radius:8px;padding:9px 12px;background:#9ab7ff;color:#10182a;font-weight:700;cursor:pointer}button.alt{background:#293750;color:#fff}.actions{display:flex;gap:8px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px;margin-top:14px}input,textarea,select{width:100%;background:#0e1727;color:#fff;border:1px solid #34435e;border-radius:8px;padding:10px;margin:6px 0 12px}textarea{min-height:65px}.task,.event{border-top:1px solid #29364d;padding:11px 0}.task h3{font-size:13px;margin:0 0 5px}.task p{white-space:pre-wrap;color:#c0ccdc;font-size:12px}.tag{border:1px solid #486078;border-radius:20px;padding:4px 8px;font-size:11px}.task summary{cursor:pointer;color:#9ab7ff}.pill{color:#9ce4c5;border:1px solid #285b4c;border-radius:20px;padding:7px 10px;font-size:12px}@media(max-width:740px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}</style></head><body><main class="shell">
+<header><div><h1>🏙️ AgentTown</h1><div class="muted">Creator Command · Local autonomous workflow engine</div></div><div class="actions"><span class="pill" id="world">Connecting…</span><button class="alt" id="pause">Pause</button></div></header>
+<div class="stats"><div class="stat"><strong id="ac">5</strong><span class="muted">Agents</span></div><div class="stat"><strong id="active">0</strong><span class="muted">Active tasks</span></div><div class="stat"><strong id="done">0</strong><span class="muted">Completed</span></div><div class="stat"><strong id="ec">0</strong><span class="muted">Events</span></div></div>
+<section class="panel"><div class="head"><h2>👁 Creator / God View — live agent monitor</h2><button id="council">Run autonomous council</button></div><div class="agents" id="agents"></div><p class="muted">Work is executed locally and persisted in SQLite. This first version uses deterministic role workers, not an LLM.</p></section>
+<div class="grid"><section class="panel"><h2>Agent work & results</h2><div id="tasks">Loading…</div></section><section class="panel"><h2>Creator decree</h2><label class="muted">Goal</label><input id="title" maxlength="120" placeholder="Build a shared knowledge archive"><label class="muted">Details / expected result</label><textarea id="desc" maxlength="1000"></textarea><label class="muted">First worker</label><select id="agent"><option value="mayor">Mayor</option><option value="researcher">Researcher</option><option value="developer">Developer</option><option value="designer">Designer</option><option value="auditor">Auditor</option></select><button id="issue">Issue decree & execute</button><h2 style="margin-top:22px">Civilization history</h2><div id="events"></div></section></div><p class="muted" style="text-align:center">Local SQLite · No paid API · Not yet an LLM agent society</p></main>
 <script>
-async function api(path,method,body){const r=await fetch(path,{method:method||"GET",headers:{"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok)throw Error(d.error||"Request failed");return d}
-function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
-async function refresh(){
- const d=await api("/api/state");
- document.getElementById("agent-count").textContent=d.agents.length;
- document.getElementById("task-count").textContent=d.tasks.length;
- document.getElementById("done-count").textContent=d.tasks.filter(t=>t.status==="completed").length;
- document.getElementById("agents").innerHTML=d.agents.map(a=>'<article class="agent"><b>🤖 '+esc(a.name)+'</b><div class="role">'+esc(a.role)+'</div><div class="muted">'+esc(a.description)+'</div></article>').join("");
- const sel=document.getElementById("agent"),old=sel.value;
- sel.innerHTML=d.agents.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>').join("");if(old)sel.value=old;
- const taskBox=document.getElementById("tasks");
- taskBox.innerHTML=d.tasks.length?d.tasks.map(t=>'<article class="task"><div><h3>'+esc(t.title)+'</h3><p>'+esc(t.description)+'</p><span class="muted">Assigned: '+esc(t.agent_name)+'</span></div><div><span class="tag '+esc(t.status)+'">'+esc(t.status)+'</span><div>'+(t.status==="proposed"?'<button class="small" data-task-action="approve" data-task-id="'+t.id+'">Approve</button>':"")+(t.status==="approved"?'<button class="small" data-task-action="complete" data-task-id="'+t.id+'">Complete</button>':"")+'</div></div></article>').join(""):"No tasks yet. Run the council or create a proposal.";
- taskBox.querySelectorAll("[data-task-action]").forEach(button=>button.addEventListener("click",()=>changeTask(Number(button.dataset.taskId),button.dataset.taskAction)));
- document.getElementById("events").innerHTML=d.events.map(e=>'<div class="event">'+esc(e.message)+'<div class="muted">'+esc(e.created_at)+'</div></div>').join("");
-}
-async function runCouncil(){try{await api("/api/run","POST",{});await refresh()}catch(e){alert(e.message)}}
-async function createTask(){const title=document.getElementById("title").value.trim(),description=document.getElementById("description").value.trim(),agent_id=document.getElementById("agent").value;if(!title){alert("Please enter a title.");return}try{await api("/api/tasks","POST",{title,description,agent_id});document.getElementById("title").value="";document.getElementById("description").value="";await refresh()}catch(e){alert(e.message)}}
-async function changeTask(id,action){try{await api("/api/tasks/"+id+"/"+action,"POST",{});await refresh()}catch(e){alert(e.message)}}
-refresh().catch(e=>alert(e.message));
+const $=x=>document.getElementById(x);async function api(p,m="GET",b){let r=await fetch(p,{method:m,headers:{"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}),d=await r.json();if(!r.ok)throw Error(d.error||"Request failed");return d}function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+async function refresh(){let d=await api("/api/state");$("ac").textContent=d.agents.length;$("active").textContent=(d.counts.queued||0)+(d.counts.running||0);$("done").textContent=d.counts.completed||0;$("ec").textContent=d.events.length;$("world").textContent=d.paused?"PAUSED BY CREATOR":"CIVILIZATION RUNNING";$("pause").textContent=d.paused?"Resume civilization":"Pause civilization";$("agents").innerHTML=d.agents.map(a=>'<article class="agent"><b>🤖 '+esc(a.name)+' · '+esc(a.status)+'</b><div class="muted">'+esc(a.role)+' · '+a.completed_tasks+' completed</div><div class="muted">'+esc(a.description)+'</div></article>').join("");$("tasks").innerHTML=d.tasks.length?d.tasks.map(t=>'<article class="task"><h3>'+esc(t.title)+' <span class="tag">'+esc(t.status)+'</span></h3><div class="muted">'+esc(t.agent_name)+' · '+esc(t.created_at)+'</div><div class="muted">'+esc(t.description)+'</div>'+(t.result?'<details><summary>View work result</summary><p>'+esc(t.result)+'</p></details>':"")+'</article>').join(""):"No tasks yet."; $("events").innerHTML=d.events.map(e=>'<div class="event">'+esc(e.message)+'<div class="muted">'+esc(e.created_at)+'</div></div>').join("")}
+$("pause").onclick=async()=>{try{await api("/api/control/pause","POST",{});await refresh()}catch(e){alert(e.message)}};$("council").onclick=async()=>{try{await api("/api/run","POST",{});await refresh()}catch(e){alert(e.message)}};$("issue").onclick=async()=>{if(!$("title").value.trim())return alert("Enter a goal.");try{await api("/api/decree","POST",{title:$("title").value,description:$("desc").value,agent_id:$("agent").value});$("title").value="";$("desc").value="";await refresh()}catch(e){alert(e.message)}};refresh().catch(e=>alert("Backend connection failed: "+e.message));setInterval(()=>refresh().catch(()=>{}),5000);
 </script></body></html>"""
-
 class Handler(BaseHTTPRequestHandler):
-    def send_json(self, payload, status=200):
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def read_body(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        return json.loads(self.rfile.read(length) or b"{}")
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-        if path == "/":
-            body = PAGE.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif path == "/api/state":
-            self.send_json(snapshot())
-        else:
-            self.send_json({"error": "Not found"}, 404)
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        try:
-            data = self.read_body()
-            if path == "/api/run":
-                proposals = [
-                    ("Prepare a civilization status report", "Summarize current work and identify blockers.", "mayor"),
-                    ("Research a useful open-source technology", "Find one technology that could help AgentTown.", "researcher"),
-                    ("Suggest one workflow improvement", "Identify a small improvement to task handling.", "developer"),
-                    ("Propose a dashboard improvement", "Suggest a clearer way to present civilization activity.", "designer"),
-                    ("Review the task governance rules", "Check whether approval and completion rules are clear.", "auditor"),
-                ]
-                with db() as conn:
-                    for title, description, agent_id in proposals:
-                        conn.execute("INSERT INTO tasks(title,description,agent_id,status,created_at) VALUES (?,?,?,'proposed',?)",
-                                     (title, description, agent_id, timestamp()))
-                record_event("The founding council created five proposals. Human approval is required.")
-                return self.send_json({"ok": True})
-            if path == "/api/tasks":
-                title = str(data.get("title", "")).strip()[:120]
-                description = str(data.get("description", "")).strip()[:500]
-                agent_id = str(data.get("agent_id", ""))
-                if not title:
-                    return self.send_json({"error": "Task title is required."}, 400)
-                if agent_id not in {a[0] for a in AGENTS}:
-                    return self.send_json({"error": "Unknown agent."}, 400)
-                with db() as conn:
-                    conn.execute("INSERT INTO tasks(title,description,agent_id,status,created_at) VALUES (?,?,?,'proposed',?)",
-                                 (title, description, agent_id, timestamp()))
-                record_event('New proposal created: "' + title + '".')
-                return self.send_json({"ok": True})
-            parts = path.strip("/").split("/")
-            if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":
-                task_id = int(parts[2])
-                action = parts[3]
-                if action == "approve":
-                    expected, new_status = "proposed", "approved"
-                elif action == "complete":
-                    expected, new_status = "approved", "completed"
-                else:
-                    return self.send_json({"error": "Unknown action."}, 404)
-                with db() as conn:
-                    task = conn.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
-                    if not task:
-                        return self.send_json({"error": "Task not found."}, 404)
-                    # Conditional update makes the state transition atomic: a task
-                    # cannot be approved/completed twice by concurrent requests.
-                    changed = conn.execute(
-                        "UPDATE tasks SET status=? WHERE id=? AND status=?",
-                        (new_status, task_id, expected)
-                    ).rowcount
-                    if changed != 1:
-                        return self.send_json({"error": "Task must be " + expected + " first."}, 409)
-                    conn.execute(
-                        "INSERT INTO events(message,created_at) VALUES (?,?)",
-                        ('Task "' + task["title"] + '" marked ' + new_status + '.', timestamp())
-                    )
-                return self.send_json({"ok": True})
-            self.send_json({"error": "Not found"}, 404)
-        except (ValueError, json.JSONDecodeError) as exc:
-            self.send_json({"error": str(exc)}, 400)
-
-    def log_message(self, fmt, *args):
-        print("%s - %s" % (self.address_string(), fmt % args))
-
-if __name__ == "__main__":
-    initialize()
-    print("AgentTown is running at http://localhost:8000")
-    print("Press Ctrl+C to stop.")
-    ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+ def send_json(self,data,status=200):
+  b=json.dumps(data).encode();self.send_response(status);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
+ def read_body(self):
+  n=int(self.headers.get("Content-Length","0"))
+  if n>16384: raise ValueError("Request body too large.")
+  d=json.loads(self.rfile.read(n) if n else b"{}")
+  if not isinstance(d,dict): raise ValueError("JSON body must be an object.")
+  return d
+ def do_GET(self):
+  p=urlparse(self.path).path
+  if p=="/":
+   b=PAGE.encode();self.send_response(200);self.send_header("Content-Type","text/html; charset=utf-8");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
+  elif p=="/api/state": self.send_json(snapshot())
+  else:self.send_json({"error":"Not found"},404)
+ def do_POST(self):
+  try:
+   d=self.read_body();p=urlparse(self.path).path
+   if p=="/api/control/pause":
+    v=not paused();set_paused(v);return self.send_json({"ok":True,"paused":v})
+   if p=="/api/run": return self.send_json({"ok":True,"task_ids":council()})
+   if p=="/api/decree":
+    if paused():return self.send_json({"error":"Civilization is paused. Resume it first."},409)
+    tid=create_task(str(d.get("title","")),str(d.get("description","")),str(d.get("agent_id","mayor")))
+    event("Creator decree executed as task #"+str(tid),None);return self.send_json({"ok":True,"task_id":tid})
+   self.send_json({"error":"Not found"},404)
+  except (ValueError,json.JSONDecodeError) as e:self.send_json({"error":str(e)},400)
+  except RuntimeError as e:self.send_json({"error":str(e)},409)
+ def log_message(self,fmt,*args):print("%s - %s"%(self.address_string(),fmt%args))
+if __name__=="__main__":
+ initialize();print("AgentTown is running at http://127.0.0.1:8000");print("Press Ctrl+C to stop.");ThreadingHTTPServer(("127.0.0.1",8000),Handler).serve_forever()
