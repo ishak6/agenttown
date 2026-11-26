@@ -86,7 +86,7 @@ def council():
  ("Design Creator monitoring experience","Define a clear view of agent status and outcomes.","designer"),
  ("Audit civilization operations","Review execution, data handling, and reliability.","auditor")]
  ids=[create_task(*j) for j in jobs]
- event("Council cycle finished; five workers processed their assignments.",db())
+ with LOCK,db() as c: event("Council cycle finished; five workers processed their assignments.",c)
  return ids
 def snapshot():
  with LOCK,db() as c:
