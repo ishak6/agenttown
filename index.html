@@ -45,9 +45,9 @@ function updateThemeButton(){ $("themeBtn").textContent=document.documentElement
 $("themeBtn").addEventListener("click",()=>{const next=document.documentElement.dataset.theme==="dark"?"light":"dark";document.documentElement.dataset.theme=next;localStorage.setItem("agenttown.theme",next);updateThemeButton();});
 updateThemeButton();
 let godPaused=localStorage.getItem("agenttown.paused")==="true";
-function renderGod(){ $("godState").textContent=godPaused?"Paused by Creator":"Observing"; $("pauseBtn").textContent=godPaused?"Resume observation":"Emergency pause"; }
+function renderGod(){ $("godState").textContent=godPaused?"Paused by Creator":"Observing"; $("pauseBtn").textContent=godPaused?"Resume civilization":"Pause civilization"; $("councilBtn").disabled=godPaused; $("taskTitle").disabled=godPaused; $("taskAgent").disabled=godPaused; $("taskForm").querySelector("button[type=submit]").disabled=godPaused; $("councilBtn").title=godPaused?"Resume the civilization to run the council":""; }
 $("pauseBtn").addEventListener("click",()=>{godPaused=!godPaused;localStorage.setItem("agenttown.paused",String(godPaused));log(godPaused?"Creator activated emergency pause.":"Creator resumed observation.");save();renderGod();render();});
-$("decreeBtn").addEventListener("click",()=>{const decree=$("decreeInput").value.trim();if(!decree)return;log("Creator decree recorded: "+decree);$("decreeInput").value="";save();render();});
+$("decreeBtn").addEventListener("click",()=>{const decree=$("decreeInput").value.trim();if(!decree)return;tasks.unshift({id:Date.now(),title:"Creator decree: "+decree,agent:"Mayor",status:"approved"});log("Creator issued a decree to the Mayor: "+decree);$("decreeInput").value="";save();render();});
 const seed=[{id:1,title:"Map the first knowledge archive",agent:"Researcher",status:"proposed"},{id:2,title:"Design the town's first public square",agent:"Designer",status:"proposed"}];
 let tasks=JSON.parse(localStorage.getItem("agenttown.tasks")||"null")||seed;
 let logs=JSON.parse(localStorage.getItem("agenttown.logs")||"null")||["The founding council assembled.","AgentTown demo initialized."];
@@ -66,8 +66,8 @@ $("logs").innerHTML=logs.map(x=>'<div class="log">'+esc(x)+'</div>').join("");
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 window.approve=id=>{const t=tasks.find(x=>x.id===id);if(!t||t.status!=="proposed")return;t.status="approved";log("Human approved: "+t.title);save();render()};
 window.completeTask=id=>{const t=tasks.find(x=>x.id===id);if(!t||t.status!=="approved")return;t.status="completed";credits+=10;log("Task completed: "+t.title+" (+10 credits)");save();render()};
-$("taskForm").addEventListener("submit",e=>{e.preventDefault();const title=$("taskTitle").value.trim();if(!title)return;tasks.unshift({id:Date.now(),title,agent:$("taskAgent").value,status:"proposed"});log("New mission proposed for "+$("taskAgent").value+": "+title);$("taskTitle").value="";save();render()});
-$("councilBtn").addEventListener("click",()=>{const ideas=[["Create a shared memory protocol","Researcher"],["Audit the town's approval rules","Auditor"],["Prototype the citizen profile card","Developer"],["Sketch a district map","Designer"]];const [title,agent]=ideas[Math.floor(Math.random()*ideas.length)];tasks.unshift({id:Date.now(),title,agent,status:"proposed"});log("Council proposed: "+title);save();render()});
+$("taskForm").addEventListener("submit",e=>{e.preventDefault();if(godPaused){log("Mission creation blocked: civilization is paused.");save();render();return;}const title=$("taskTitle").value.trim();if(!title)return;tasks.unshift({id:Date.now(),title,agent:$("taskAgent").value,status:"proposed"});log("New mission proposed for "+$("taskAgent").value+": "+title);$("taskTitle").value="";save();render()});
+$("councilBtn").addEventListener("click",()=>{if(godPaused){log("Council is paused by the Creator.");save();render();return;}const ideas=[["Create a shared memory protocol","Researcher"],["Audit the town's approval rules","Auditor"],["Prototype the citizen profile card","Developer"],["Sketch a district map","Designer"]];const [title,agent]=ideas[Math.floor(Math.random()*ideas.length)];tasks.unshift({id:Date.now(),title,agent,status:"proposed"});log("Council proposed: "+title);save();render()});
 renderGod();
 render();
 </script></body></html>
