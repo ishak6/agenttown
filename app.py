@@ -130,7 +130,8 @@ class Handler(BaseHTTPRequestHandler):
    if p=="/api/decree":
     if paused():return self.send_json({"error":"Civilization is paused. Resume it first."},409)
     tid=create_task(str(d.get("title","")),str(d.get("description","")),str(d.get("agent_id","mayor")))
-    event("Creator decree executed as task #"+str(tid),None);return self.send_json({"ok":True,"task_id":tid})
+    with LOCK,db() as c: event("Creator decree executed as task #"+str(tid),c)
+    return self.send_json({"ok":True,"task_id":tid})
    self.send_json({"error":"Not found"},404)
   except (ValueError,json.JSONDecodeError) as e:self.send_json({"error":str(e)},400)
   except RuntimeError as e:self.send_json({"error":str(e)},409)
