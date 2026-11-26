@@ -1,55 +1,46 @@
 # AgentTown — Agent Civilization
 
-A zero-cost, beginner-friendly prototype of an experimental digital civilization.
+AgentTown is an experimental local civilization simulator with five role-based worker agents and a Creator (God) control view.
 
-## First milestone
+## One-click start on Windows
 
-- Five founding agents: Mayor, Researcher, Developer, Designer, Auditor
-- Task market and agent assignment
-- Human approval gate before a task can be completed
-- Local event history
-- SQLite database created automatically
-- Browser dashboard
+1. Download this repository as a ZIP from GitHub and extract it.
+2. Open the extracted `agenttown` folder.
+3. Double-click **`START_AGENTTOWN.bat`**.
+4. Wait for the browser to open at http://127.0.0.1:8000.
 
-**Current limitation:** agents use deterministic demo behavior. They are not autonomous LLM agents yet. This milestone establishes the basic society structure without paid APIs or external dependencies.
+Python 3.9 or newer must be installed on Windows. The launcher checks for the Python launcher (`py`) or `python`, starts the local server in a minimized window, waits for it to respond, and opens the dashboard. If Windows shows a security prompt, choose the option to run the local batch file only if you trust this project.
 
-## Run locally
+To stop AgentTown, double-click **`STOP_AGENTTOWN.bat`**. You can also close the minimized AgentTown Server window.
 
-Requires Python 3.9+.
+## Manual start
+
+Open a terminal in this folder and run:
+
+    py -3 app.py
+
+If that command is unavailable, try:
 
     python app.py
 
-On Windows, if that command is not recognized, try:
+Then visit http://127.0.0.1:8000. Press Ctrl+C in the server window to stop it.
 
-    py app.py
+## What currently works
 
-Open http://localhost:8000 in your browser. Stop with Ctrl+C.
+- Five local role workers: Mayor, Researcher, Developer, Designer, Auditor
+- Creator decrees that dispatch work to a selected worker
+- Council cycle that assigns work to all five workers
+- Pause and resume controls
+- SQLite persistence in `agenttown.db`
+- Agent work results and civilization event history
+- No paid API or third-party Python package required
 
-## Run in GitHub Codespaces
+## Important limitations
 
-1. Open this repository.
-2. Select Code → Codespaces → Create codespace on main.
-3. In the terminal, run python app.py.
-4. Open the Ports tab and open port 8000.
+This is a local, deterministic workflow engine. The workers generate role-based plans; they are **not yet LLM-powered agents**, do not independently browse the live web, and do not execute arbitrary code. The Python server runs only while your computer is on and the server process is running. GitHub Pages hosts a separate static preview; it cannot run this Python backend.
 
-Codespaces has usage quotas. Check included usage and billing controls before enabling paid usage.
-
-## Principles
-
-1. Build small, working milestones.
-2. Require human approval for consequential actions.
-3. Keep an event history for accountability.
-4. Avoid paid APIs and cloud services in the first prototype.
-
-## Roadmap
-
-- [ ] Add persistent agent memory and knowledge notes
-- [ ] Add internal non-monetary credits
-- [ ] Add configurable agent goals and policies
-- [ ] Add automated tests and stronger input validation
-- [ ] Add optional AI model integration behind a provider interface
-- [ ] Explore a 2D/3D city view after the core system is stable
+The database file `agenttown.db` is created in this folder and is ignored by Git. Back it up if you want to preserve your local civilization history.
 
 ## Safety
 
-This is an experimental prototype, not a production service. Do not expose it publicly without authentication, security review, and deployment hardening.
+The server binds to `127.0.0.1` so it is accessible only from your own computer by default. Do not expose it to the public internet without authentication and a security review.
