@@ -38,6 +38,7 @@
 <section class="panel"><h3>🌱 Next milestones</h3><div class="log">01 · Connect this dashboard to the Python + SQLite engine</div><div class="log">02 · Give agents persistent shared memory</div><div class="log">03 · Introduce internal credits and institutions</div><div class="log">04 · Build the 3D city view</div></section>
 </aside></div><div class="foot">AgentTown is an experimental prototype. Credits are fictional demo points, not money.</div></div>
 <script>
+const $=id=>document.getElementById(id);
 const savedTheme=localStorage.getItem("agenttown.theme")||"dark";
 document.documentElement.dataset.theme=savedTheme;
 function updateThemeButton(){ $("themeBtn").textContent=document.documentElement.dataset.theme==="dark"?"☀️ Light mode":"🌙 Dark mode"; }
@@ -47,7 +48,6 @@ const seed=[{id:1,title:"Map the first knowledge archive",agent:"Researcher",sta
 let tasks=JSON.parse(localStorage.getItem("agenttown.tasks")||"null")||seed;
 let logs=JSON.parse(localStorage.getItem("agenttown.logs")||"null")||["The founding council assembled.","AgentTown demo initialized."];
 let credits=Number(localStorage.getItem("agenttown.credits")||100);
-const $=id=>document.getElementById(id);
 function save(){localStorage.setItem("agenttown.tasks",JSON.stringify(tasks));localStorage.setItem("agenttown.logs",JSON.stringify(logs));localStorage.setItem("agenttown.credits",credits)}
 function log(s){logs.unshift(new Date().toLocaleTimeString()+" · "+s);logs=logs.slice(0,12)}
 function render(){
