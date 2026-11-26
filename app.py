@@ -109,7 +109,9 @@ async function refresh(){
  document.getElementById("agents").innerHTML=d.agents.map(a=>'<article class="agent"><b>🤖 '+esc(a.name)+'</b><div class="role">'+esc(a.role)+'</div><div class="muted">'+esc(a.description)+'</div></article>').join("");
  const sel=document.getElementById("agent"),old=sel.value;
  sel.innerHTML=d.agents.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>').join("");if(old)sel.value=old;
- document.getElementById("tasks").innerHTML=d.tasks.length?d.tasks.map(t=>'<article class="task"><div><h3>'+esc(t.title)+'</h3><p>'+esc(t.description)+'</p><span class="muted">Assigned: '+esc(t.agent_name)+'</span></div><div><span class="tag '+esc(t.status)+'">'+esc(t.status)+'</span><div>'+(t.status==="proposed"?'<button class="small" onclick="changeTask('+t.id+',\\'approve\\')">Approve</button>':"")+(t.status==="approved"?'<button class="small" onclick="changeTask('+t.id+',\\'complete\\')">Complete</button>':"")+'</div></div></article>').join(""):"No tasks yet. Run the council or create a proposal.";
+ const taskBox=document.getElementById("tasks");
+ taskBox.innerHTML=d.tasks.length?d.tasks.map(t=>'<article class="task"><div><h3>'+esc(t.title)+'</h3><p>'+esc(t.description)+'</p><span class="muted">Assigned: '+esc(t.agent_name)+'</span></div><div><span class="tag '+esc(t.status)+'">'+esc(t.status)+'</span><div>'+(t.status==="proposed"?'<button class="small" data-task-action="approve" data-task-id="'+t.id+'">Approve</button>':"")+(t.status==="approved"?'<button class="small" data-task-action="complete" data-task-id="'+t.id+'">Complete</button>':"")+'</div></div></article>').join(""):"No tasks yet. Run the council or create a proposal.";
+ taskBox.querySelectorAll("[data-task-action]").forEach(button=>button.addEventListener("click",()=>changeTask(Number(button.dataset.taskId),button.dataset.taskAction)));
  document.getElementById("events").innerHTML=d.events.map(e=>'<div class="event">'+esc(e.message)+'<div class="muted">'+esc(e.created_at)+'</div></div>').join("");
 }
 async function runCouncil(){try{await api("/api/run","POST",{});await refresh()}catch(e){alert(e.message)}}
@@ -187,13 +189,21 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     return self.send_json({"error": "Unknown action."}, 404)
                 with db() as conn:
-                    task = conn.execute("SELECT title,status FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    task = conn.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
                     if not task:
                         return self.send_json({"error": "Task not found."}, 404)
-                    if task["status"] != expected:
-                        return self.send_json({"error": "Task must be " + expected + " first."}, 400)
-                    conn.execute("UPDATE tasks SET status=? WHERE id=?", (new_status, task_id))
-                record_event('Task "' + task["title"] + '" marked ' + new_status + '.')
+                    # Conditional update makes the state transition atomic: a task
+                    # cannot be approved/completed twice by concurrent requests.
+                    changed = conn.execute(
+                        "UPDATE tasks SET status=? WHERE id=? AND status=?",
+                        (new_status, task_id, expected)
+                    ).rowcount
+                    if changed != 1:
+                        return self.send_json({"error": "Task must be " + expected + " first."}, 409)
+                    conn.execute(
+                        "INSERT INTO events(message,created_at) VALUES (?,?)",
+                        ('Task "' + task["title"] + '" marked ' + new_status + '.', timestamp())
+                    )
                 return self.send_json({"ok": True})
             self.send_json({"error": "Not found"}, 404)
         except (ValueError, json.JSONDecodeError) as exc:
