@@ -1,7 +1,0 @@
-__pycache__/
-*.py[cod]
-agenttown.db
-.env
-.venv/
-venv/
-.DS_Store
